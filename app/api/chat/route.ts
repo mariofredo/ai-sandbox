@@ -1,9 +1,26 @@
-// src/app/api/chat/route.ts
 import { NextRequest, NextResponse } from 'next/server'
-import { buildSupplierContext } from '@/lib/suppliers'
+import { db } from '@/lib/db'
 
 const GEMINI_API_URL =
   'https://generativelanguage.googleapis.com/v1beta/models/gemma-3-27b-it:generateContent'
+
+async function buildSupplierContext() {
+  const suppliers = await db.supplier.findMany({ include: { products: true } })
+  return suppliers
+    .map((s) => {
+      const productList = s.products
+        .map(
+          (p) =>
+            `    - ${p.name} (SKU: ${p.sku}) | Harga: Rp ${p.price.toLocaleString('id-ID')}/${p.unit} | Stok: ${p.stock}`
+        )
+        .join('\n')
+      return `Supplier: ${s.name} (ID: ${s.id})
+Lokasi: ${s.location} | Rating: ${s.rating}/5.0 | Email: ${s.email} | Kontak: ${s.phone ?? '-'}
+Kategori: ${s.categories.join(', ')}
+Produk tersedia:\n${productList}`
+    })
+    .join('\n\n---\n')
+}
 
 export async function POST(req: NextRequest) {
   try {
@@ -21,12 +38,11 @@ export async function POST(req: NextRequest) {
       )
     }
 
-    // Build supplier context to inject into system prompt
-    const supplierContext = buildSupplierContext()
+    const supplierContext = await buildSupplierContext()
 
     const systemPrompt = `Kamu adalah AI Procurement Assistant untuk dashboard pengadaan barang perusahaan.
 
-Tugasmu adalah membantu pengguna menemukan dan merekomendasikan supplier beserta produk-produk yang sesuai dengan kebutuhan pengadaan mereka.
+Tugasmu adalah membantu admin membuat RFQ (Request for Quotation) dan merekomendasikan supplier dari database.
 
 PENTING - Database Supplier yang tersedia:
 ${supplierContext}
@@ -34,34 +50,37 @@ ${supplierContext}
 ---
 
 Panduan cara menjawab:
-1. Pahami kebutuhan barang yang diminta pengguna (jenis, jumlah, anggaran jika disebutkan)
-2. Cocokkan dengan supplier yang memiliki produk relevan dari database di atas
-3. Rekomendasikan 1-3 supplier terbaik yang paling sesuai
-4. Untuk setiap supplier yang direkomendasikan, tampilkan:
-   - Nama supplier dan ID-nya
-   - Produk spesifik yang relevan beserta harga dan stok
-   - Alasan mengapa supplier ini direkomendasikan
-5. Jika ada beberapa pilihan produk serupa dari supplier berbeda, bandingkan harga dan rekomendasikan yang terbaik
-6. Selalu gunakan format yang rapi dan mudah dibaca
-7. Jika kebutuhan tidak tersedia di database, sampaikan dengan jujur dan minta clarifikasi
-8. Gunakan Bahasa Indonesia yang profesional namun tetap ramah
+1. Pahami kebutuhan barang yang diminta (jenis, jumlah, spesifikasi, anggaran)
+2. Bantu admin merumuskan RFQ yang terstruktur dengan daftar item
+3. Cocokkan dengan supplier yang memiliki produk relevan
+4. Rekomendasikan 1-3 supplier terbaik yang paling sesuai
+5. Untuk setiap supplier, tampilkan produk relevan, harga, dan stok
+6. Jika admin minta "buat RFQ", format outputmu sebagai JSON dalam code block:
+\`\`\`json
+{
+  "rfq": {
+    "title": "Judul RFQ singkat",
+    "description": "Deskripsi kebutuhan lengkap",
+    "items": [
+      { "productName": "nama produk", "quantity": 10, "unit": "unit" }
+    ]
+  }
+}
+\`\`\`
+7. Gunakan Bahasa Indonesia yang profesional namun ramah
 
-Format output rekomendasi:
+Format rekomendasi supplier:
 ✅ **[Nama Supplier]** (ID: SUPXXX)
 📍 Lokasi: [kota] | ⭐ Rating: [rating]/5.0
 📦 Produk yang cocok:
   • [Nama Produk] - Rp [harga]/[unit] (Stok: [jumlah])
 💡 Mengapa direkomendasikan: [alasan singkat]`
 
-    // Convert our message format to Gemini's format
-    // Gemini uses 'user' and 'model' roles (not 'assistant')
     const geminiMessages = messages.map((msg: { role: string; content: string }) => ({
       role: msg.role === 'assistant' ? 'model' : 'user',
       parts: [{ text: msg.content }],
     }))
 
-    // Gemini API doesn't have a system role in the same way as OpenAI
-    // We prepend the system prompt as a user+model exchange
     const contents = [
       {
         role: 'user',
@@ -71,7 +90,7 @@ Format output rekomendasi:
         role: 'model',
         parts: [
           {
-            text: 'Halo! Saya adalah AI Procurement Assistant. Saya siap membantu Anda menemukan supplier dan produk terbaik sesuai kebutuhan pengadaan. Silakan ceritakan barang apa yang Anda butuhkan! 🛒',
+            text: 'Halo! Saya adalah AI Procurement Assistant. Saya siap membantu Anda membuat RFQ dan menemukan supplier terbaik. Ceritakan kebutuhan barang Anda! 🛒',
           },
         ],
       },
@@ -80,17 +99,10 @@ Format output rekomendasi:
 
     const response = await fetch(`${GEMINI_API_URL}?key=${apiKey}`, {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
+      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         contents,
-        generationConfig: {
-          temperature: 0.7,
-          topK: 40,
-          topP: 0.95,
-          maxOutputTokens: 2048,
-        },
+        generationConfig: { temperature: 0.7, topK: 40, topP: 0.95, maxOutputTokens: 2048 },
         safetySettings: [
           { category: 'HARM_CATEGORY_HARASSMENT', threshold: 'BLOCK_MEDIUM_AND_ABOVE' },
           { category: 'HARM_CATEGORY_HATE_SPEECH', threshold: 'BLOCK_MEDIUM_AND_ABOVE' },
@@ -102,7 +114,6 @@ Format output rekomendasi:
 
     if (!response.ok) {
       const errorData = await response.json()
-      console.error('Gemini API error:', errorData)
       return NextResponse.json(
         { error: `Gemini API error: ${errorData.error?.message || 'Unknown error'}` },
         { status: response.status }
@@ -110,13 +121,9 @@ Format output rekomendasi:
     }
 
     const data = await response.json()
-
-    // Extract the text response from Gemini's response format
     const aiMessage = data.candidates?.[0]?.content?.parts?.[0]?.text
 
-    if (!aiMessage) {
-      return NextResponse.json({ error: 'No response generated from AI' }, { status: 500 })
-    }
+    if (!aiMessage) return NextResponse.json({ error: 'No response from AI' }, { status: 500 })
 
     return NextResponse.json({ message: aiMessage })
   } catch (error) {

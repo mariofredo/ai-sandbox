@@ -1,0 +1,96 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+model Admin {
+  id        String   @id @default(cuid())
+  email     String   @unique
+  name      String
+  password  String
+  createdAt DateTime @default(now())
+  orders    Order[]
+}
+
+model Supplier {
+  id          String          @id @default(cuid())
+  name        String
+  email       String          @unique
+  phone       String?
+  location    String
+  rating      Float           @default(0)
+  categories  String[]
+  products    Product[]
+  assignments RFQAssignment[]
+  responses   RFQResponse[]
+  createdAt   DateTime        @default(now())
+}
+
+model Product {
+  id         String   @id @default(cuid())
+  name       String
+  sku        String   @unique
+  price      Float
+  unit       String
+  stock      Int      @default(0)
+  supplierId String
+  supplier   Supplier @relation(fields: [supplierId], references: [id])
+  createdAt  DateTime @default(now())
+}
+
+model Order {
+  id           String          @id @default(cuid())
+  title        String
+  description  String
+  status       String          @default("DRAFT")
+  adminId      String
+  admin        Admin           @relation(fields: [adminId], references: [id])
+  rfqItems     RFQItem[]
+  assignments  RFQAssignment[]
+  responses    RFQResponse[]
+  aiSuggestion String?
+  awardedTo    String[]
+  createdAt    DateTime        @default(now())
+  updatedAt    DateTime        @updatedAt
+}
+
+model RFQItem {
+  id          String  @id @default(cuid())
+  orderId     String
+  order       Order   @relation(fields: [orderId], references: [id])
+  productName String
+  quantity    Int
+  unit        String
+  notes       String?
+}
+
+model RFQAssignment {
+  id         String   @id @default(cuid())
+  orderId    String
+  order      Order    @relation(fields: [orderId], references: [id])
+  supplierId String
+  supplier   Supplier @relation(fields: [supplierId], references: [id])
+  status     String   @default("PENDING") // PENDING | RESPONDED
+  notifiedAt DateTime @default(now())
+
+  @@unique([orderId, supplierId])
+}
+
+model RFQResponse {
+  id         String   @id @default(cuid())
+  orderId    String
+  order      Order    @relation(fields: [orderId], references: [id])
+  supplierId String
+  supplier   Supplier @relation(fields: [supplierId], references: [id])
+  canSupply  Boolean
+  notes      String?
+  totalPrice Float?
+  items      Json?
+  isSelected Boolean  @default(false)
+  createdAt  DateTime @default(now())
+
+  @@unique([orderId, supplierId])
+}
